@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SolSentry — Operator Dashboard</title>
+<link rel="icon" href="../../assets/favicon.svg" />
+<link rel="stylesheet" href="../../colors_and_type.css" />
+<style>
+  html, body { margin: 0; background: var(--bg); color: var(--fg-1); min-height: 100vh; }
+  @keyframes sol-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.55; transform: scale(1.25); } }
+  .layout { display: grid; grid-template-columns: 220px 1fr; min-height: calc(100vh - 56px); }
+  .main { padding: 28px 32px; display: flex; flex-direction: column; gap: 24px; overflow: hidden; }
+  .section-header { display:flex; align-items:center; justify-content:space-between; }
+  .h-title { font-family: var(--font-display); font-weight:700; font-size: 32px; letter-spacing:-0.02em; margin:0; }
+  .h-sub { color: var(--fg-3); font-size: 13px; margin-top: 4px; }
+  .two-col { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 20px; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .panel-title { font-family: var(--font-body); font-weight: 500; font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--fg-3); }
+  .op-table-head { display:grid; grid-template-columns: 1.6fr 0.8fr 0.8fr 0.8fr 1fr 0.9fr; gap:16px; padding: 10px 18px; font-family: var(--font-body); font-weight: 500; font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--fg-4); border-bottom: 1px solid var(--border); }
+  .graph { height: 260px; background-color: var(--surface); background-image: linear-gradient(rgba(255,107,0,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,107,0,.05) 1px, transparent 1px); background-size: 32px 32px; border: 1px solid var(--border); border-radius: 6px; position: relative; overflow: hidden; }
+  .node { position: absolute; width: 10px; height: 10px; border-radius: 999px; transform: translate(-50%,-50%); }
+  .node.op { background: var(--brand-orange); box-shadow: 0 0 0 4px rgba(255,107,0,.15); }
+  .node.wal { background: var(--brand-teal); }
+  .node.bot { background: var(--brand-purple); }
+  .edge { position: absolute; height: 1px; background: rgba(255,107,0,.35); transform-origin: 0 0; }
+  .log { font-family: var(--font-mono); font-size: 12px; color: var(--fg-2); line-height: 1.7; max-height: 280px; overflow: auto; }
+  .log .ts { color: var(--fg-4); margin-right: 10px; }
+  .log .tag-crit { color: var(--status-critical); }
+  .log .tag-ok { color: var(--brand-teal); }
+  .log .tag-info { color: var(--fg-3); }
+  .log .addr { color: var(--brand-orange); }
+  .footer-bar { height: 28px; background: var(--surface); border-top: 1px solid var(--border); display:flex; align-items:center; justify-content:space-between; padding: 0 20px; font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); letter-spacing: 0.05em; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="./HunterStatus.jsx"></script>
+<script type="text/babel" src="./WalletAddress.jsx"></script>
+<script type="text/babel" src="./FlagPill.jsx"></script>
+<script type="text/babel" src="./TopBar.jsx"></script>
+<script type="text/babel" src="./SideNav.jsx"></script>
+<script type="text/babel" src="./MetricStrip.jsx"></script>
+<script type="text/babel" src="./ScanResult.jsx"></script>
+<script type="text/babel" src="./OperatorRow.jsx"></script>
+
+<script type="text/babel">
+const { useState } = React;
+
+const App = () => {
+  const [tab, setTab] = useState('dashboard');
+
+  const scan = {
+    token: 'Meteora Position NFT (MPN)',
+    contract: 'EMSTMP9uTV1uEVXMHURR6w8pDmaywJkgurF8XCVrRgVa',
+    risk: 100,
+    holders: 1,
+    topHolder: 100,
+    timestamp: '14:02 UTC',
+    flags: [
+      { label: 'MINT_AUTHORITY_ENABLED',   tone: 'critical' },
+      { label: 'FREEZE_AUTHORITY_ENABLED', tone: 'critical' },
+      { label: 'TOP_HOLDER_OWNS_100%',     tone: 'warning' },
+      { label: 'TOP_10_CONTROL_100%',      tone: 'warning' },
+      { label: 'VERY_FEW_HOLDERS',         tone: 'warning' },
+    ],
+  };
+
+  const operators = [
+    { handle: '4kxscute', wallets: 14, deploys: 349, avgRisk: 98, lastSeen: '2m ago',  status: 'flagged'  },
+    { handle: '6ApZRMWh', wallets: 12, deploys: 101, avgRisk: 89, lastSeen: '41m ago', status: 'flagged'  },
+    { handle: 'GEUDKx63', wallets: 9,  deploys: 74,  avgRisk: 91, lastSeen: '2h ago',  status: 'flagged'  },
+    { handle: 'DXenfC',   wallets: 11, deploys: 101, avgRisk: 85, lastSeen: '5h ago',  status: 'tracking' },
+  ];
+
+  // Static graph layout
+  const nodes = [
+    { x: 20, y: 50, t: 'op' }, { x: 30, y: 30, t: 'wal' }, { x: 35, y: 70, t: 'wal' },
+    { x: 45, y: 45, t: 'bot' }, { x: 55, y: 55, t: 'wal' }, { x: 60, y: 25, t: 'bot' },
+    { x: 70, y: 65, t: 'wal' }, { x: 80, y: 40, t: 'op' }, { x: 85, y: 75, t: 'wal' },
+    { x: 50, y: 80, t: 'wal' }, { x: 25, y: 85, t: 'bot' },
+  ];
+  const edges = [[0,1],[0,2],[1,3],[2,3],[3,4],[4,5],[4,6],[6,7],[7,8],[6,9],[0,10]];
+
+  return (
+    <div>
+      <TopBar />
+      <div className="layout">
+        <SideNav active={tab} onNav={setTab} />
+        <main className="main">
+          <div className="section-header">
+            <div>
+              <h1 className="h-title">Dashboard</h1>
+              <div className="h-sub">Autonomous risk scoring on every new Solana deploy. Hunter agents attach to flagged operators.</div>
+            </div>
+            <HunterStatus count={30} active={true} />
+          </div>
+
+          <MetricStrip />
+
+          <div className="two-col">
+            <ScanResult {...scan} critical={true} />
+            <div className="panel">
+              <div className="panel-head">
+                <span className="panel-title">Social Graph · Operator 4kxscute</span>
+                <span style={{fontFamily:'var(--font-mono)', fontSize:11, color:'var(--fg-3)'}}>11 entities · 3 clusters</span>
+              </div>
+              <div className="graph">
+                {edges.map(([a,b], i) => {
+                  const n1 = nodes[a], n2 = nodes[b];
+                  const dx = (n2.x-n1.x), dy = (n2.y-n1.y);
+                  const len = Math.sqrt(dx*dx + dy*dy);
+                  const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+                  return <div key={i} className="edge" style={{left:`${n1.x}%`, top:`${n1.y}%`, width:`${len}%`, transform:`rotate(${ang}deg)`}}/>;
+                })}
+                {nodes.map((n, i) => <div key={i} className={`node ${n.t}`} style={{left:`${n.x}%`, top:`${n.y}%`}} />)}
+              </div>
+              <div style={{display:'flex', gap:16, marginTop:12, fontFamily:'var(--font-body)', fontSize:11, color:'var(--fg-3)', letterSpacing:'0.1em', textTransform:'uppercase'}}>
+                <span><span style={{display:'inline-block',width:8,height:8,borderRadius:999,background:'var(--brand-orange)',marginRight:6}}/>Operator</span>
+                <span><span style={{display:'inline-block',width:8,height:8,borderRadius:999,background:'var(--brand-teal)',marginRight:6}}/>Wallet</span>
+                <span><span style={{display:'inline-block',width:8,height:8,borderRadius:999,background:'var(--brand-purple)',marginRight:6}}/>Bot Cluster</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="panel" style={{padding:0}}>
+            <div className="panel-head" style={{padding:'18px 20px', marginBottom:0, borderBottom:'1px solid var(--border)'}}>
+              <span className="panel-title">Serial Deployer Watchlist</span>
+              <span style={{fontFamily:'var(--font-mono)', fontSize:11, color:'var(--fg-3)'}}>69 tracked · 778 total mapped</span>
+            </div>
+            <div className="op-table-head">
+              <span>Operator</span><span>Wallets</span><span>Deploys</span><span>Avg Risk</span><span>Last Seen</span><span>Status</span>
+            </div>
+            {operators.map(op => <OperatorRow key={op.handle} {...op} />)}
+          </div>
+
+          <div className="panel">
+            <div className="panel-head">
+              <span className="panel-title">Live Feed · Hunter Agents</span>
+              <span style={{fontFamily:'var(--font-mono)', fontSize:11, color:'var(--brand-teal)'}}>● streaming</span>
+            </div>
+            <div className="log">
+              <div><span className="ts">14:02:11</span><span className="tag-crit">[CRITICAL]</span> HUNTER-042 auto-scan → risk 100/100 · <span className="addr">EMSTMP9uTV1uEVXMHURR6w8p…</span></div>
+              <div><span className="ts">14:01:47</span><span className="tag-info">[TRACK]</span> operator 4kxscute deployed new token (350th deploy · 14 wallets)</div>
+              <div><span className="ts">14:01:02</span><span className="tag-ok">[SAFE]</span> scan complete · risk 12/100 · <span className="addr">9fRq2aLpK3nX…</span></div>
+              <div><span className="ts">13:59:31</span><span className="tag-info">[EVOLVE]</span> agent HUNTER-042 mutation · spawn_threshold 82 → 95</div>
+              <div><span className="ts">13:58:04</span><span className="tag-crit">[CRITICAL]</span> bot cluster #1749 — 12 wallets executing same-block buys</div>
+              <div><span className="ts">13:56:22</span><span className="tag-info">[EXPLAIN]</span> AI risk explainer · PT-BR · 10 calls/hr</div>
+              <div><span className="ts">13:55:10</span><span className="tag-ok">[SAFE]</span> KOL @cryptoshilla · 0 operator correlations this week</div>
+              <div><span className="ts">13:53:47</span><span className="tag-info">[TRACK]</span> drain flow · 6 hops · 42.1 SOL → Kamino → Jupiter → CEX deposit</div>
+            </div>
+          </div>
+        </main>
+      </div>
+      <footer className="footer-bar">
+        <span>v2.3.20 · 527 tests · 132 commits · mainnet since April 2026</span>
+        <span>Helius 5/5 · Alchemy 3/3 · Triton 1/1</span>
+        <span>Nunca estagnar. Sempre evoluir.</span>
+      </footer>
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
