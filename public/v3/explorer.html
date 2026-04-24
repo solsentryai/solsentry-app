@@ -167,6 +167,93 @@ function useOperatorLookup(wallet) {
   return { data, loading, error };
 }
 
+function useOperatorNetwork(wallet) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    const w = (wallet || '').trim();
+    if (w.length < 32 || w.length > 44) { setData(null); setError(null); return; }
+    let dead = false;
+    setLoading(true); setError(null);
+    (async () => {
+      try {
+        const r = await fetch(API + '/operator/' + encodeURIComponent(w) + '/network?tokens=14&clusters=5&peers=3', { cache: 'no-store' });
+        if (!r.ok) throw new Error('status ' + r.status);
+        const j = await r.json();
+        if (!dead) setData(j);
+      } catch (e) {
+        if (!dead) { setData(null); setError(e.message || 'network lookup failed'); }
+      } finally {
+        if (!dead) setLoading(false);
+      }
+    })();
+    return () => { dead = true; };
+  }, [wallet]);
+  return { data, loading, error };
+}
+
+// Deterministic radial layout: root at center, each node kind on its own ring.
+function layoutNetwork(net) {
+  if (!net || !net.nodes?.length) return { nodes: [], edges: [] };
+  const CX = 500, CY = 340;
+  const rings = {
+    operator: 0,
+    wallet: 220,
+    token: 310,
+    cluster: 160,
+    kol: 380,
+  };
+  const byKind = {};
+  net.nodes.forEach(n => { (byKind[n.kind] = byKind[n.kind] || []).push(n); });
+
+  const laidOut = net.nodes.map((n) => {
+    if (n.is_root || n.kind === 'operator') return { ...n, x: CX, y: CY };
+    const arr = byKind[n.kind];
+    const idx = arr.indexOf(n);
+    const total = arr.length || 1;
+    const r = rings[n.kind] ?? 260;
+    // stagger tokens slightly so overlapping rings don't collide
+    const offsetAngle = n.kind === 'cluster' ? -Math.PI / 2 : n.kind === 'wallet' ? 0 : n.kind === 'token' ? Math.PI / 6 : Math.PI;
+    const theta = offsetAngle + (idx / total) * Math.PI * 2;
+    return { ...n, x: CX + Math.cos(theta) * r, y: CY + Math.sin(theta) * r };
+  });
+  return { nodes: laidOut, edges: net.edges || [] };
+}
+
+function apiNodeColor(n) {
+  if (n.kind === 'operator') return 'var(--brand-orange)';
+  if (n.kind === 'cluster') return 'var(--brand-purple)';
+  if (n.kind === 'kol') return 'var(--brand-teal)';
+  if (n.kind === 'token') {
+    if (n.outcome === 'confirmed_scam' || n.risk_level === 'CRITICAL') return 'var(--status-critical)';
+    if (n.risk_level === 'HIGH') return 'var(--status-warning)';
+    if (n.outcome === 'confirmed_safe' || n.risk_level === 'CLEAN') return 'var(--brand-teal)';
+    return 'var(--fg-3)';
+  }
+  // wallet
+  const rugs = n.confirmed_rugs || 0;
+  if (rugs >= 10) return 'var(--status-critical)';
+  if (rugs >= 3) return 'var(--status-warning)';
+  if (rugs === 0 && (n.total_tokens || 0) > 0) return 'var(--brand-teal)';
+  return 'var(--fg-3)';
+}
+function apiNodeSize(n) {
+  if (n.kind === 'operator') return 20;
+  if (n.kind === 'cluster') return 14;
+  if (n.kind === 'kol') return 11;
+  if (n.kind === 'token') return 9;
+  return 10;
+}
+function apiEdgeStroke(kind) {
+  if (kind === 'deployed') return 'rgba(255,107,0,0.35)';
+  if (kind === 'alt') return 'rgba(255,107,0,0.55)';
+  if (kind === 'member') return 'rgba(168,85,247,0.45)';
+  if (kind === 'cluster_peer') return 'rgba(168,85,247,0.25)';
+  if (kind === 'paid') return 'rgba(0,201,167,0.4)';
+  return 'rgba(255,255,255,0.15)';
+}
+
 // Generated graph: operator hub + wallets + bots + drain paths
 const NODES = [
   { id: 'root', x: 500, y: 320, t: 'op',  risk: 100, handle: '4kxscute',  addr: '4kxscuteRLQdNiTXA33YYsvywAPNA6DQTifswxjL5pH1', deploys: 703, rugs: 634, wallets: 14, funded: 'Binance · Oct 2024', firstSeen: '2024-10-12 04:22 UTC' },
@@ -306,32 +393,47 @@ function edgeStroke(kind) {
   return 'rgba(255,107,0,0.35)';
 }
 
-function Canvas({ selected, setSelected }) {
+function Canvas({ selected, setSelected, graph, loading, error }) {
+  const nodeMap = useMemo(() => {
+    const m = {};
+    (graph?.nodes || []).forEach(n => { m[n.id] = n; });
+    return m;
+  }, [graph]);
+  const rugCount = useMemo(
+    () => (graph?.nodes || []).filter(n => n.kind === 'token' && n.outcome === 'confirmed_scam').length,
+    [graph]
+  );
+
   return (
     <div className="xp-canvas">
       <svg viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet">
-        {EDGES.map(([a, b, kind], i) => {
-          const n1 = NODES.find(n => n.id === a), n2 = NODES.find(n => n.id === b);
+        {(graph?.edges || []).map((e, i) => {
+          const a = nodeMap[e.from], b = nodeMap[e.to];
+          if (!a || !b) return null;
+          const dashed = e.kind === 'cluster_peer' || e.kind === 'paid' ? '3 3' : e.kind === 'member' ? '4 3' : 'none';
           return (
-            <line key={i} x1={n1.x} y1={n1.y} x2={n2.x} y2={n2.y}
-              stroke={edgeStroke(kind)}
-              strokeWidth={kind === 'drain' ? 2 : 1}
-              strokeDasharray={kind === 'ctrl' ? '4 3' : kind === 'buy' ? '2 3' : 'none'} />
+            <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+              stroke={apiEdgeStroke(e.kind)}
+              strokeWidth={e.kind === 'deployed' ? 1 : e.kind === 'member' ? 1.4 : 1}
+              strokeDasharray={dashed} />
           );
         })}
-        {NODES.map(n => {
+        {(graph?.nodes || []).map(n => {
           const sel = selected === n.id;
+          const size = apiNodeSize(n);
+          const color = apiNodeColor(n);
+          const showLabel = n.kind === 'operator' || n.kind === 'cluster' || n.kind === 'kol' || (n.kind === 'token' && n.risk_level === 'CRITICAL');
           return (
-            <g key={n.id} className={'xp-node' + (sel ? ' selected' : '')} onClick={() => setSelected(n.id)}>
-              {sel && <circle cx={n.x} cy={n.y} r={nodeSize(n) + 12} fill="none" stroke={nodeColor(n)} strokeOpacity="0.3" strokeWidth="1" />}
-              <circle cx={n.x} cy={n.y} r={nodeSize(n)}
-                fill={nodeColor(n)} fillOpacity={n.t === 'cex' ? 0.6 : 0.9}
-                stroke={nodeColor(n)} strokeOpacity="0.5" strokeWidth="6" paintOrder="stroke"
-                style={{filter: n.t === 'op' ? 'drop-shadow(0 0 10px rgba(255,107,0,0.5))' : 'none'}} />
-              {(n.t === 'op' || n.t === 'bot' || n.t === 'cex') && (
-                <text x={n.x} y={n.y + nodeSize(n) + 16} textAnchor="middle"
+            <g key={n.id} className={'xp-node' + (sel ? ' selected' : '')} onClick={() => setSelected(n.id)} style={{cursor: 'pointer'}}>
+              {sel && <circle cx={n.x} cy={n.y} r={size + 12} fill="none" stroke={color} strokeOpacity="0.3" strokeWidth="1" />}
+              <circle cx={n.x} cy={n.y} r={size}
+                fill={color} fillOpacity={n.kind === 'kol' ? 0.6 : 0.9}
+                stroke={color} strokeOpacity="0.5" strokeWidth="6" paintOrder="stroke"
+                style={{filter: n.kind === 'operator' ? 'drop-shadow(0 0 10px rgba(255,107,0,0.5))' : 'none'}} />
+              {showLabel && (
+                <text x={n.x} y={n.y + size + 16} textAnchor="middle"
                   fill="#F5F5F5" fontSize="11" fontFamily="JetBrains Mono, monospace" fontWeight="500">
-                  {n.handle}
+                  {n.label}
                 </text>
               )}
             </g>
@@ -342,21 +444,22 @@ function Canvas({ selected, setSelected }) {
       <div className="xp-legend">
         <div className="xp-legend-row">Legend</div>
         <div className="xp-legend-row"><i style={{background:'var(--brand-orange)'}}/>Operator (root)</div>
-        <div className="xp-legend-row"><i style={{background:'var(--status-critical)'}}/>Wallet · risk ≥ 90</div>
-        <div className="xp-legend-row"><i style={{background:'var(--status-warning)'}}/>Wallet · risk ≥ 70</div>
-        <div className="xp-legend-row"><i style={{background:'var(--brand-teal)'}}/>Wallet · safe</div>
+        <div className="xp-legend-row"><i style={{background:'var(--status-critical)'}}/>Token / wallet · critical</div>
+        <div className="xp-legend-row"><i style={{background:'var(--status-warning)'}}/>Token / wallet · high</div>
+        <div className="xp-legend-row"><i style={{background:'var(--brand-teal)'}}/>Safe · clean</div>
         <div className="xp-legend-row"><i style={{background:'var(--brand-purple)'}}/>Bot cluster</div>
-        <div className="xp-legend-row"><i style={{background:'var(--fg-3)'}}/>CEX / bridge</div>
       </div>
 
       <div className="xp-overlay-stats">
-        <div className="xp-ostat"><b>13</b><small>entities</small></div>
-        <div className="xp-ostat"><b>17</b><small>edges</small></div>
-        <div className="xp-ostat"><b style={{color:'var(--status-critical)'}}>2</b><small>drain paths</small></div>
+        <div className="xp-ostat"><b>{graph?.stats?.node_count ?? 0}</b><small>entities</small></div>
+        <div className="xp-ostat"><b>{graph?.stats?.edge_count ?? 0}</b><small>edges</small></div>
+        <div className="xp-ostat"><b style={{color:'var(--status-critical)'}}>{rugCount}</b><small>confirmed rugs</small></div>
       </div>
 
       <div className="xp-drain-legend">
-        drain path · <b>w1 → MEXC</b> · 42.1 SOL · 6 hops
+        {loading && <>loading /v1/operator/{(graph?.root || '').slice(0,8) || '…'}/network</>}
+        {!loading && error && <span style={{color:'var(--status-critical)'}}>network fetch: {error}</span>}
+        {!loading && !error && graph?.root && <>live · {graph.stats?.node_count || 0} nodes · latency {graph.latency_ms ?? '—'}ms</>}
       </div>
 
       <div className="xp-zoom">
@@ -369,9 +472,70 @@ function Canvas({ selected, setSelected }) {
   );
 }
 
-function DetailPanel({ nodeId }) {
-  const n = NODES.find(x => x.id === nodeId) || NODES[0];
-  const events = EVENTS_BY_NODE[n.id] || EVENTS_BY_NODE.root;
+function DetailPanel({ nodeId, graph }) {
+  const liveNode = (graph?.nodes || []).find(x => x.id === nodeId);
+  // Fallback: synthesize a display node from live graph root if nothing selected yet
+  const rootNode = (graph?.nodes || []).find(n => n.is_root || n.kind === 'operator') || null;
+  const src = liveNode || rootNode;
+  if (src) {
+    const kind = src.kind;
+    const addr = src.wallet || src.mint || src.cluster_id || src.handle || '';
+    const tone = src.risk_level === 'CRITICAL' ? 'var(--status-critical)' : src.risk_level === 'HIGH' ? 'var(--status-warning)' : 'var(--brand-teal)';
+    const kv = [];
+    if (kind === 'operator') {
+      kv.push(['Tokens', src.total_tokens ?? '—']);
+      kv.push(['Confirmed rugs', (src.confirmed_rugs ?? 0), 'crit']);
+      kv.push(['Rug rate', `${(src.rug_rate_pct ?? 0).toFixed(1)}%`]);
+      if (src.tags?.length) kv.push(['Tags', src.tags.slice(0,3).join(', ')]);
+    } else if (kind === 'wallet') {
+      kv.push(['Total tokens', src.total_tokens ?? '—']);
+      kv.push(['Confirmed rugs', src.confirmed_rugs ?? 0, 'crit']);
+    } else if (kind === 'token') {
+      kv.push(['Symbol', src.label]);
+      kv.push(['Outcome', src.outcome]);
+      kv.push(['Deployed', src.predicted_at ? new Date(src.predicted_at * 1000).toISOString().slice(0,16).replace('T',' ') : '—']);
+    } else if (kind === 'cluster') {
+      kv.push(['Size', src.size]);
+      if (src.risk_level) kv.push(['Risk level', src.risk_level]);
+      if (src.flags?.length) kv.push(['Flags', src.flags.slice(0,3).join(', ')]);
+    }
+    return (
+      <aside className="xp-right">
+        <div className="xp-detail-head">
+          <span className={'xp-detail-type ' + (kind === 'operator' ? 'op' : kind === 'cluster' ? 'bot' : kind === 'token' ? 'token' : 'wal')}>
+            {kind === 'operator' ? 'Operator' : kind === 'cluster' ? 'Bot cluster' : kind === 'token' ? 'Token' : kind === 'kol' ? 'KOL' : 'Wallet'}
+          </span>
+        </div>
+        <div className="xp-detail-handle">{src.label}</div>
+        <div className="xp-detail-addr"><b style={{wordBreak:'break-all'}}>{addr || '—'}</b></div>
+
+        {(src.risk_score != null) && (
+          <div className="xp-risk-row">
+            <div className="xp-risk-score" style={{color: tone}}>
+              {src.risk_score}<span>/100</span>
+            </div>
+            <div className="xp-risk-label">
+              <span className="t" style={{color: tone}}>{src.risk_level || (src.outcome === 'confirmed_scam' ? 'Rugged' : src.outcome === 'confirmed_safe' ? 'Safe' : '—')}</span>
+              <span className="s">api.solsentry.app · live</span>
+            </div>
+          </div>
+        )}
+        <dl className="xp-kv">
+          {kv.map(([k, v, cls]) => <React.Fragment key={k}><dt>{k}</dt><dd className={cls || ''}>{v}</dd></React.Fragment>)}
+        </dl>
+        {kind === 'operator' && addr && (
+          <div style={{marginTop: 16}}>
+            <a className="xp-btn" style={{display: 'inline-flex', gap: 6, textDecoration: 'none'}}
+               href={`/token/${addr}`} target="_top">Open profile →</a>
+          </div>
+        )}
+      </aside>
+    );
+  }
+
+  // Final fallback — mock NODES reference (kept for legacy demo if live graph is down)
+  const n = NODES[0];
+  const events = EVENTS_BY_NODE.root;
   const flags = n.t === 'op'
     ? ['SERIAL_RUGGER','OPERATOR_4KXSCUTE','RUG_RATE_90%','FUNDED_FROM_CEX','14_WALLET_CLUSTER']
     : n.t === 'bot'
@@ -485,15 +649,30 @@ function LivePanel({ query }) {
 }
 
 function App() {
-  const [selected, setSelected] = useState('root');
   const initial = (typeof window !== 'undefined' && window.location.hash) ? decodeURIComponent(window.location.hash.slice(1)) : '4kxscuteRLQdNiTXA33YYsvywAPNA6DQTifswxjL5pH1';
   const [query, setQuery] = useState(initial);
   const [pending, setPending] = useState(initial);
   const [depth, setDepth] = useState(2);
   const [preset, setPreset] = useState('rug');
+  const [selected, setSelected] = useState(null);
   useEffect(() => {
     if (query) window.history.replaceState(null, '', '#' + encodeURIComponent(query));
   }, [query]);
+
+  const { data: netRaw, loading, error } = useOperatorNetwork(query);
+  const graph = useMemo(() => {
+    const laid = layoutNetwork(netRaw);
+    return { ...laid, root: netRaw?.root, stats: netRaw?.stats, latency_ms: netRaw?.latency_ms };
+  }, [netRaw]);
+
+  // Auto-select the root node when graph loads
+  useEffect(() => {
+    if (graph?.nodes?.length && !graph.nodes.find(n => n.id === selected)) {
+      const root = graph.nodes.find(n => n.is_root || n.kind === 'operator');
+      setSelected(root?.id || graph.nodes[0].id);
+    }
+  }, [graph]);
+
   return (
     <>
       <SSNav active="graph" />
@@ -502,8 +681,8 @@ function App() {
         <LivePanel query={query} />
         <div className="xp-body" style={{paddingTop: 56}}>
           <LeftPanel depth={depth} setDepth={setDepth} preset={preset} setPreset={setPreset} />
-          <Canvas selected={selected} setSelected={setSelected} />
-          <DetailPanel nodeId={selected} />
+          <Canvas selected={selected} setSelected={setSelected} graph={graph} loading={loading} error={error} />
+          <DetailPanel nodeId={selected} graph={graph} />
         </div>
         <footer className="xp-footer">
           <span>explorer.solsentry.app · v1.2</span>

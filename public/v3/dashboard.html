@@ -406,33 +406,103 @@ function ScanCard() {
 }
 
 function GraphPanel() {
+  const [topWallet, setTopWallet] = useState(null);
+  const [graph, setGraph] = useState(null);
+  const [status, setStatus] = useState('loading');
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const r = await fetch(API + '/top-operators?limit=1', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        const w = j.operators?.[0]?.wallet;
+        if (w && !dead) setTopWallet(w);
+      } catch (_) {}
+    })();
+    return () => { dead = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!topWallet) return;
+    let dead = false;
+    (async () => {
+      try {
+        setStatus('loading');
+        const r = await fetch(API + '/operator/' + encodeURIComponent(topWallet) + '/network?tokens=8&clusters=3&peers=2', { cache: 'no-store' });
+        if (!r.ok) throw 0;
+        const j = await r.json();
+        if (!dead) { setGraph(j); setStatus('ok'); }
+      } catch (_) {
+        if (!dead) setStatus('error');
+      }
+    })();
+    return () => { dead = true; };
+  }, [topWallet]);
+
+  // Radial layout in percentage coords (panel uses %-based positioning)
+  const laid = useMemo(() => {
+    if (!graph?.nodes?.length) return null;
+    const CX = 50, CY = 50;
+    const rings = { operator: 0, wallet: 30, token: 42, cluster: 20, kol: 48 };
+    const byKind = {};
+    graph.nodes.forEach(n => { (byKind[n.kind] = byKind[n.kind] || []).push(n); });
+    return graph.nodes.map(n => {
+      if (n.is_root || n.kind === 'operator') return { ...n, x: CX, y: CY };
+      const arr = byKind[n.kind];
+      const idx = arr.indexOf(n), total = arr.length || 1;
+      const r = rings[n.kind] ?? 34;
+      const theta = (idx / total) * Math.PI * 2;
+      return { ...n, x: CX + Math.cos(theta) * r, y: CY + Math.sin(theta) * r };
+    });
+  }, [graph]);
+  const laidMap = useMemo(() => Object.fromEntries((laid || []).map(n => [n.id, n])), [laid]);
+
+  const nodeClassFor = (n) => {
+    if (n.kind === 'operator') return 'op';
+    if (n.kind === 'cluster') return 'bot';
+    if (n.kind === 'token') return n.outcome === 'confirmed_scam' ? 'w' : n.risk_level === 'CRITICAL' ? 'w' : 'ok';
+    if (n.kind === 'kol') return 'cex';
+    // wallet
+    return (n.confirmed_rugs || 0) >= 3 ? 'w' : 'ok';
+  };
+
+  const title = graph?.root ? `Operator Graph · ${graph.root.slice(0, 8)} · live` : 'Operator Graph · loading';
+  const meta = graph?.stats ? `${graph.stats.node_count} entities · ${graph.stats.clusters_included || 0} clusters · ` : 'fetching · ';
+
   return (
     <div className="ds-panel">
       <div className="ds-panel-head">
-        <span className="ds-panel-title">Operator Graph · 4kxscute · depth 2</span>
-        <span className="ds-panel-meta">11 entities · 3 clusters · <a href="explorer.html" style={{color:'var(--brand-orange)'}}>expand →</a></span>
+        <span className="ds-panel-title">{title}</span>
+        <span className="ds-panel-meta">{meta}<a href={topWallet ? `explorer.html#${topWallet}` : 'explorer.html'} style={{color:'var(--brand-orange)'}}>expand →</a></span>
       </div>
       <div className="ds-graph">
-        {G_EDGES.map(([a, b, kind], i) => {
-          const n1 = NODE_BY[a], n2 = NODE_BY[b];
-          const dx = n2.x - n1.x, dy = n2.y - n1.y;
+        {status === 'error' && <div style={{position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)', color:'var(--status-critical)', fontFamily:'var(--font-mono)', fontSize:11}}>network endpoint unavailable</div>}
+        {laid && (graph?.edges || []).map((e, i) => {
+          const a = laidMap[e.from], b = laidMap[e.to];
+          if (!a || !b) return null;
+          const dx = b.x - a.x, dy = b.y - a.y;
           const len = Math.sqrt(dx*dx + dy*dy);
           const ang = Math.atan2(dy, dx) * 180 / Math.PI;
-          return <div key={i} className={'ds-edge ' + (kind || '')}
-            style={{left:`${n1.x}%`, top:`${n1.y}%`, width:`${len}%`, transform:`rotate(${ang}deg)`}} />;
+          const kindClass = e.kind === 'deployed' ? 'fund' : e.kind === 'alt' ? 'fund' : e.kind === 'member' ? 'ctrl' : e.kind === 'cluster_peer' ? 'buy' : 'fund';
+          return <div key={i} className={'ds-edge ' + kindClass}
+            style={{left:`${a.x}%`, top:`${a.y}%`, width:`${len}%`, transform:`rotate(${ang}deg)`}} />;
         })}
-        {G_NODES.map(n => (
+        {(laid || []).map(n => (
           <React.Fragment key={n.id}>
-            <div className={'ds-node ' + n.t} style={{left:`${n.x}%`, top:`${n.y}%`}} />
-            {n.l && <div className="ds-node-label" style={{left:`${n.x}%`, top:`calc(${n.y}% + 12px)`}}>{n.l}</div>}
+            <div className={'ds-node ' + nodeClassFor(n)} style={{left:`${n.x}%`, top:`${n.y}%`}} />
+            {(n.kind === 'operator' || n.kind === 'cluster') && n.label && (
+              <div className="ds-node-label" style={{left:`${n.x}%`, top:`calc(${n.y}% + 12px)`}}>{n.label}</div>
+            )}
           </React.Fragment>
         ))}
       </div>
       <div className="ds-graph-legend">
         <span><i style={{background:'var(--brand-orange)'}}/>Operator</span>
-        <span><i style={{background:'var(--brand-teal)'}}/>Wallet</span>
+        <span><i style={{background:'var(--status-critical)'}}/>Critical</span>
+        <span><i style={{background:'var(--brand-teal)'}}/>Safe</span>
         <span><i style={{background:'var(--brand-purple)'}}/>Bot cluster</span>
-        <span><i style={{background:'var(--fg-3)'}}/>CEX / Bridge</span>
       </div>
     </div>
   );
